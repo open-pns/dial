@@ -175,6 +175,8 @@ int main() {
                        absolute_time_diff_us(gate_open_since, get_absolute_time()) >= GATE_HOLD_MS * 1000) {
                 // Held above threshold for 20ms — act once, then require a reset
                 dial_value += (int)gyro_x;
+                if (dial_value > 100) dial_value = 100;
+                if (dial_value < 0)   dial_value = 0;
                 gate_triggered = true;
             }
         } else {
