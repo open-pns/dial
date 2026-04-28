@@ -18,9 +18,9 @@
 #define REG_PWR_MGMT_1      0x6B // Sleep / Reset / Clock Select
 #define REG_WHO_AM_I        0x75 // Should return 0x68
 
-// Data Registers (Burst Read Start Point)
-// We read 14 bytes starting here: Accel (6) + Temp (2) + Gyro (6)
-#define REG_ACCEL_XOUT_H    0x3B 
+// Data Registers
+#define REG_ACCEL_XOUT_H    0x3B
+#define REG_GYRO_XOUT_H     0x43
 
 // Size of the data block
 #define MPU6050_DATA_LEN    14 

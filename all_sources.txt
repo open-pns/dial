@@ -1,0 +1,487 @@
+================================================================================
+inc/mpu6050_registers.h
+================================================================================
+#ifndef MPU6050_REGISTERS_H
+#define MPU6050_REGISTERS_H
+
+// Physical Address
+#define MPU6050_ADDR        0x68
+
+// Configuration Registers
+#define REG_SMPLRT_DIV      0x19 // Sample Rate Divider
+#define REG_CONFIG          0x1A // DLPF (Low Pass Filter) Config
+#define REG_GYRO_CONFIG     0x1B // Range (250/500/1000/2000 dps)
+#define REG_ACCEL_CONFIG    0x1C // Range (2g/4g/8g/16g)
+
+// Interrupt Control
+#define REG_INT_PIN_CFG     0x37 // Interrupt Pin Configuration
+#define REG_INT_ENABLE      0x38 // Interrupt Enable
+
+// Power Management
+#define REG_PWR_MGMT_1      0x6B // Sleep / Reset / Clock Select
+#define REG_WHO_AM_I        0x75 // Should return 0x68
+
+// Data Registers
+#define REG_ACCEL_XOUT_H    0x3B
+#define REG_GYRO_XOUT_H     0x43
+
+// Size of the data block
+#define MPU6050_DATA_LEN    14
+
+#endif
+
+
+================================================================================
+inc/MPU6050.h
+================================================================================
+#pragma once
+#include <stdint.h>
+#include "hardware/i2c.h"
+
+class MPU6050 {
+public:
+    static constexpr float    GYRO_SCALE  = 131.0f;
+    static constexpr uint32_t TIMEOUT_US  = 10000;
+
+    MPU6050(i2c_inst_t *port, uint8_t addr);
+
+    bool    init();
+    int16_t readAxis(uint8_t reg);
+    void    calibrate(float &ox, float &oy, float &oz, int samples = 500);
+
+private:
+    i2c_inst_t *_port;
+    uint8_t     _addr;
+};
+
+
+================================================================================
+src/MPU6050.cpp
+================================================================================
+#include "../inc/MPU6050.h"
+#include "../inc/mpu6050_registers.h"
+#include <stdio.h>
+#include "pico/stdlib.h"
+
+MPU6050::MPU6050(i2c_inst_t *port, uint8_t addr)
+    : _port(port), _addr(addr) {}
+
+bool MPU6050::init() {
+    uint8_t who_reg = REG_WHO_AM_I;
+    uint8_t who_val = 0;
+    if (i2c_write_timeout_us(_port, _addr, &who_reg, 1, true, TIMEOUT_US) < 0 ||
+        i2c_read_timeout_us(_port, _addr, &who_val, 1, false, TIMEOUT_US) < 0) {
+        printf("ERROR: MPU6050 not responding on I2C (check wiring/power)\n");
+        return false;
+    }
+    if (who_val != 0x68) {
+        printf("ERROR: Unexpected WHO_AM_I: 0x%02X (expected 0x68)\n", who_val);
+        return false;
+    }
+
+    uint8_t wake[] = {REG_PWR_MGMT_1, 0x00};
+    if (i2c_write_timeout_us(_port, _addr, wake, 2, false, TIMEOUT_US) < 0) {
+        printf("ERROR: Failed to wake MPU6050\n");
+        return false;
+    }
+
+    uint8_t range[] = {REG_GYRO_CONFIG, 0x00};
+    if (i2c_write_timeout_us(_port, _addr, range, 2, false, TIMEOUT_US) < 0) {
+        printf("ERROR: Failed to configure gyro range\n");
+        return false;
+    }
+
+    return true;
+}
+
+int16_t MPU6050::readAxis(uint8_t reg) {
+    uint8_t buf[2];
+    if (i2c_write_timeout_us(_port, _addr, &reg, 1, true, TIMEOUT_US) < 0 ||
+        i2c_read_timeout_us(_port, _addr, buf, 2, false, TIMEOUT_US) < 0) {
+        printf("\nERROR: I2C read failed for reg 0x%02X\n", reg);
+        return 0;
+    }
+    return (int16_t)((buf[0] << 8) | buf[1]);
+}
+
+void MPU6050::calibrate(float &ox, float &oy, float &oz, int samples) {
+    printf("\nCalibrating — hold sensor still...\n");
+    float sx = 0, sy = 0, sz = 0;
+    for (int i = 0; i < samples; i++) {
+        sx += readAxis(REG_GYRO_XOUT_H);
+        sy += readAxis(REG_GYRO_XOUT_H + 2);
+        sz += readAxis(REG_GYRO_XOUT_H + 4);
+        sleep_ms(2);
+    }
+    ox = (sx / samples) / GYRO_SCALE;
+    oy = (sy / samples) / GYRO_SCALE;
+    oz = (sz / samples) / GYRO_SCALE;
+    printf("Calibration done. Offsets — X: %.3f  Y: %.3f  Z: %.3f (deg/s)\n", ox, oy, oz);
+}
+
+
+================================================================================
+src/main.cpp
+================================================================================
+#include <stdio.h>
+#include "hardware/adc.h"
+#include "hardware/gpio.h"
+#include "hardware/i2c.h"
+#include "pico/stdlib.h"
+#include "pico/time.h"
+
+#include "../inc/MPU6050.h"
+#include "../inc/mpu6050_registers.h"
+
+// I2C
+#define I2C_PORT    i2c0
+#define SDA_PIN     4
+#define SCL_PIN     5
+
+// ADC
+#define ADC_PIN             40
+#define ADC_CHANNEL         0
+#define ADC1_PIN            41
+#define ADC1_CHANNEL        1
+#define ADC_VREF            3.3f
+#define ADC_RESOLUTION      4095.0f
+
+// Calibration button
+#define CAL_BUTTON_PIN      21
+#define CAL_SAMPLES         500
+
+// Dial
+#define DEGREES_PER_TICK    3.6f   // 360° sweeps full 0-100 range
+
+struct Dial {
+    int   value      = 0;
+    float angleAccum = 0.0f;
+
+    void update(float gyroX, float voltage, float threshold, float dt) {
+        if (voltage <= threshold) {
+            angleAccum = 0.0f;
+            return;
+        }
+
+        angleAccum += gyroX * dt;
+        int ticks = (int)(angleAccum / DEGREES_PER_TICK);
+        if (ticks != 0) {
+            value      += ticks;
+            angleAccum -= ticks * DEGREES_PER_TICK;
+        }
+
+        if (value > 100) value = 100;
+        if (value < 0)   value = 0;
+    }
+};
+
+int main() {
+    stdio_init_all();
+
+    i2c_init(I2C_PORT, 400 * 1000);
+    gpio_set_function(SDA_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(SCL_PIN, GPIO_FUNC_I2C);
+    gpio_pull_up(SDA_PIN);
+    gpio_pull_up(SCL_PIN);
+
+    adc_init();
+    adc_gpio_init(ADC_PIN);
+    adc_gpio_init(ADC1_PIN);
+
+    gpio_init(CAL_BUTTON_PIN);
+    gpio_set_dir(CAL_BUTTON_PIN, GPIO_IN);
+    gpio_pull_up(CAL_BUTTON_PIN);
+
+    sleep_ms(2000);
+    printf("PNS Virtual Dial Starting...\n");
+
+    MPU6050 imu(I2C_PORT, MPU6050_ADDR);
+    if (!imu.init()) {
+        printf("FATAL: IMU init failed. Halting.\n");
+        while (true) tight_loop_contents();
+    }
+
+    float ox = 0, oy = 0, oz = 0;
+    Dial  dial;
+    absolute_time_t loopTime = get_absolute_time();
+
+    while (true) {
+        absolute_time_t now = get_absolute_time();
+        float dt = absolute_time_diff_us(loopTime, now) * 1e-6f;
+        loopTime = now;
+
+        int16_t raw_x = imu.readAxis(REG_GYRO_XOUT_H);
+        int16_t raw_y = imu.readAxis(REG_GYRO_XOUT_H + 2);
+        int16_t raw_z = imu.readAxis(REG_GYRO_XOUT_H + 4);
+
+        if (!gpio_get(CAL_BUTTON_PIN)) {
+            sleep_ms(20);
+            if (!gpio_get(CAL_BUTTON_PIN)) {
+                imu.calibrate(ox, oy, oz, CAL_SAMPLES);
+                while (!gpio_get(CAL_BUTTON_PIN)) tight_loop_contents();
+            }
+        }
+
+        float gx = (raw_x / MPU6050::GYRO_SCALE) - ox;
+        float gy = (raw_y / MPU6050::GYRO_SCALE) - oy;
+        float gz = (raw_z / MPU6050::GYRO_SCALE) - oz;
+
+        if (gx > -0.5f && gx < 0.5f) gx = 0.0f;
+        if (gy > -0.5f && gy < 0.5f) gy = 0.0f;
+        if (gz > -0.5f && gz < 0.5f) gz = 0.0f;
+
+        adc_select_input(ADC_CHANNEL);
+        float voltage   = (adc_read() / ADC_RESOLUTION) * ADC_VREF;
+
+        adc_select_input(ADC1_CHANNEL);
+        float threshold = (adc_read() / ADC_RESOLUTION) * ADC_VREF;
+
+        dial.update(-gy, voltage, threshold, dt);
+
+        printf("%.2f,%.2f,%.2f,%.3f,%.3f,%d\n", gx, gy, gz, voltage, threshold, dial.value);
+        fflush(stdout);
+
+        sleep_ms(5);
+    }
+
+    return 0;
+}
+
+
+================================================================================
+gui/src/Main.java
+================================================================================
+import javax.swing.SwingUtilities;
+
+public class Main {
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            DialFrame frame = new DialFrame();
+            frame.setVisible(true);
+            new SerialReader(frame).start();
+        });
+    }
+}
+
+
+================================================================================
+gui/src/DialFrame.java
+================================================================================
+import javax.swing.*;
+import java.awt.*;
+
+public class DialFrame extends JFrame {
+
+    private final JLabel       rotXVal;
+    private final JLabel       rotYVal;
+    private final JLabel       rotZVal;
+    private final JLabel       adcVal;
+    private final JLabel       thrVal;
+    private final JLabel       dialVal;
+    private final JLabel       statusLabel;
+    private final JProgressBar progressBar;
+
+    private volatile int lastDial = -1;
+
+    public DialFrame() {
+        setTitle("PNS Virtual Dial");
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setResizable(false);
+
+        Font labelFont = new Font("Monospaced", Font.PLAIN, 14);
+        Font valueFont = new Font("Monospaced", Font.BOLD,  14);
+
+        JPanel dataPanel = new JPanel(new GridLayout(6, 2, 10, 8));
+        dataPanel.setBorder(BorderFactory.createEmptyBorder(16, 24, 16, 24));
+
+        rotXVal = addRow(dataPanel, "Rot X:", labelFont, valueFont);
+        rotYVal = addRow(dataPanel, "Rot Y:", labelFont, valueFont);
+        rotZVal = addRow(dataPanel, "Rot Z:", labelFont, valueFont);
+        adcVal  = addRow(dataPanel, "ADC:",   labelFont, valueFont);
+        thrVal  = addRow(dataPanel, "Thresh:", labelFont, valueFont);
+        dialVal = addRow(dataPanel, "Dial:",  labelFont, valueFont);
+
+        rotXVal.setText(String.format("%8.2f  deg/s", -250.0f));
+        rotYVal.setText(String.format("%8.2f  deg/s", -250.0f));
+        rotZVal.setText(String.format("%8.2f  deg/s", -250.0f));
+        adcVal.setText( String.format("%6.3f  V",      3.300f));
+        thrVal.setText( String.format("%6.3f  V",      3.300f));
+        dialVal.setText("100");
+
+        progressBar = new JProgressBar(0, 100);
+        progressBar.setStringPainted(true);
+        progressBar.setBorder(BorderFactory.createEmptyBorder(4, 24, 4, 24));
+        progressBar.setPreferredSize(new Dimension(0, 28));
+
+        statusLabel = new JLabel("Connecting...", SwingConstants.CENTER);
+        statusLabel.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        statusLabel.setForeground(Color.GRAY);
+        statusLabel.setBorder(BorderFactory.createEmptyBorder(4, 0, 10, 0));
+
+        JPanel content = new JPanel();
+        content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
+        content.add(dataPanel);
+        content.add(progressBar);
+        content.add(statusLabel);
+        add(content);
+
+        pack();
+        setLocationRelativeTo(null);
+
+        new VolumeSync(this).start();
+    }
+
+    public int getLastDial() {
+        return lastDial;
+    }
+
+    private JLabel addRow(JPanel panel, String label, Font lf, Font vf) {
+        JLabel l = new JLabel(label);
+        l.setFont(lf);
+        JLabel v = new JLabel("—");
+        v.setFont(vf);
+        panel.add(l);
+        panel.add(v);
+        return v;
+    }
+
+    public void updateData(float rotX, float rotY, float rotZ, float adc, float thr, int dial) {
+        lastDial = dial;
+        SwingUtilities.invokeLater(() -> {
+            progressBar.setValue(dial);
+            rotXVal.setText(String.format("%8.2f  deg/s", rotX));
+            rotYVal.setText(String.format("%8.2f  deg/s", rotY));
+            rotZVal.setText(String.format("%8.2f  deg/s", rotZ));
+            adcVal.setText( String.format("%6.3f  V",     adc));
+            thrVal.setText( String.format("%6.3f  V",     thr));
+            dialVal.setText(String.format("%d",           dial));
+        });
+    }
+
+    public void setStatus(String text, Color color) {
+        SwingUtilities.invokeLater(() -> {
+            statusLabel.setText(text);
+            statusLabel.setForeground(color);
+        });
+    }
+}
+
+
+================================================================================
+gui/src/SerialReader.java
+================================================================================
+//heavily relying on this for port reading
+import com.fazecast.jSerialComm.SerialPort;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.awt.Color;
+
+//we want serialReader to run on a seperate thread
+public class SerialReader extends Thread {
+
+    private static final int BAUD = 115200;
+
+    private final DialFrame frame;
+
+    public SerialReader(DialFrame frame) {
+        this.frame = frame; //bring frame to write to in scope
+        setDaemon(true); //thread needs this
+    }
+
+    @Override
+    public void run() {
+        while (true) {
+            SerialPort port = findPort();
+            if (port == null) {
+                frame.setStatus("No device found. retrying...", Color.RED);
+                sleep(2000);
+                continue;
+            }
+
+            port.setBaudRate(BAUD);
+            port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 0, 0);
+
+            if (!port.openPort()) {
+                frame.setStatus("Could not open port. retrying...", Color.RED);
+                sleep(2000);
+                continue;
+            }
+
+            frame.setStatus("Connected: " + port.getSystemPortName(), new Color(0, 140, 0));
+            sleep(500);
+
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(port.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String[] p = line.split(",");
+                    if (p.length != 6) continue;
+                    float rotX = Float.parseFloat(p[0]);
+                    float rotY = Float.parseFloat(p[1]);
+                    float rotZ = Float.parseFloat(p[2]);
+                    float adc  = Float.parseFloat(p[3]);
+                    float thr  = Float.parseFloat(p[4]);
+                    int   dial = Integer.parseInt(p[5].trim());
+                    frame.updateData(rotX, rotY, rotZ, adc, thr, dial);
+                }
+            } catch (Exception e) {
+                System.out.println("Read exception: " + e.getMessage());
+            } finally {
+                port.closePort();
+            }
+
+            frame.setStatus("Disconnected. reconnecting...", Color.RED);
+            sleep(1000);
+        }
+    }
+
+    //function for troubleshooting. Sometimes the board disconnects itself.
+    private SerialPort findPort() {
+        //iterate through serialPorts to find the one connected over usb (the rp2350 proton board)
+        for (SerialPort p : SerialPort.getCommPorts()) {
+            String name = p.getSystemPortName();
+            //return usb serial port
+            if (name.contains("usbmodem") || name.contains("usbserial")) return p;
+        }
+        return null;
+    }
+
+    //basic sleep function
+    private void sleep(int ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
+    }
+}
+
+
+================================================================================
+gui/src/VolumeSync.java
+================================================================================
+public class VolumeSync extends Thread {
+
+    private final DialFrame frame;
+
+    public VolumeSync(DialFrame frame) {
+        this.frame = frame;
+        setDaemon(true);
+    }
+
+    @Override
+    public void run() {
+        int applied = -1;
+        while (true) {
+            int target = frame.getLastDial();
+            if (target >= 0 && target != applied) {
+                try {
+                    new ProcessBuilder("osascript", "-e", "set volume output volume " + target)
+                        .start()
+                        .waitFor();
+                    applied = target;
+                } catch (Exception e) {
+                    System.out.println("Volume set failed: " + e.getMessage());
+                }
+            } else {
+                try { Thread.sleep(30); } catch (InterruptedException ignored) {}
+            }
+        }
+    }
+}
