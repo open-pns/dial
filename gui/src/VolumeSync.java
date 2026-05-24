@@ -7,6 +7,12 @@ public class VolumeSync extends Thread {
         setDaemon(true);
     }
 
+
+
+
+    //I have only confirmed this works on MAC. onascript is mac's command line interpreter for applescript.
+    //mainly just a loop that checks if the vol int from serial reader has been changed. if
+    //it has, it updates the systems volume. pretty inefficient. 
     @Override
     public void run() {
         int applied = -1;

@@ -1,3 +1,10 @@
+//NOTE: a good chunk of this code is re used from a project I have been
+//working on as a side project. This was originally all C - so I wrapped
+//some things in classes for this project. All java code is entirely fresh.
+
+//My foundations come from ece362. I understand that this is pretty out of scope
+//for this assignment.
+
 #include <stdio.h>
 #include "hardware/adc.h"
 #include "hardware/gpio.h"

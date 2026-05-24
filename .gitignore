@@ -1,2 +1,6 @@
 .pio
 .vscode/
+.claude
+submission/**
+submission.zip
+all_sources.txt

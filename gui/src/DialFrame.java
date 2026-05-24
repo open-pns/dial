@@ -12,6 +12,7 @@ public class DialFrame extends JFrame {
     private final JLabel       statusLabel;
     private final JProgressBar progressBar;
 
+    //set to -1 as intit. state stored in lastDial
     private volatile int lastDial = -1;
 
     public DialFrame() {
@@ -19,6 +20,7 @@ public class DialFrame extends JFrame {
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setResizable(false);
 
+        //monospaced so the numbers dont jump around
         Font labelFont = new Font("Monospaced", Font.PLAIN, 14);
         Font valueFont = new Font("Monospaced", Font.BOLD,  14);
 
@@ -26,9 +28,12 @@ public class DialFrame extends JFrame {
         dataPanel.setBorder(BorderFactory.createEmptyBorder(16, 24, 16, 24));
 
         rotXVal = addRow(dataPanel, "Rot X:", labelFont, valueFont);
+        //Y is correct value once implemented
         rotYVal = addRow(dataPanel, "Rot Y:", labelFont, valueFont);
+
         rotZVal = addRow(dataPanel, "Rot Z:", labelFont, valueFont);
         adcVal  = addRow(dataPanel, "ADC:",   labelFont, valueFont);
+        
         thrVal  = addRow(dataPanel, "Thresh:", labelFont, valueFont);
         dialVal = addRow(dataPanel, "Dial:",  labelFont, valueFont);
 
@@ -39,11 +44,13 @@ public class DialFrame extends JFrame {
         thrVal.setText( String.format("%6.3f  V",      3.300f));
         dialVal.setText("100");
 
+        //using a basic progress bar to map the dial progress.
         progressBar = new JProgressBar(0, 100);
         progressBar.setStringPainted(true);
         progressBar.setBorder(BorderFactory.createEmptyBorder(4, 24, 4, 24));
         progressBar.setPreferredSize(new Dimension(0, 28));
 
+        //SansSerif because I like it.
         statusLabel = new JLabel("Connecting...", SwingConstants.CENTER);
         statusLabel.setFont(new Font("SansSerif", Font.PLAIN, 12));
         statusLabel.setForeground(Color.GRAY);
@@ -64,6 +71,8 @@ public class DialFrame extends JFrame {
 
     public int getLastDial() {
         return lastDial;
+    
+        //
     }
 
     private JLabel addRow(JPanel panel, String label, Font lf, Font vf) {
@@ -80,6 +89,9 @@ public class DialFrame extends JFrame {
         lastDial = dial;
         SwingUtilities.invokeLater(() -> {
             progressBar.setValue(dial);
+
+            //C style formatting to give the values some margin. Used this in a couple labs.
+            //Values can jump a lot - especially rot. so large margin is needed.
             rotXVal.setText(String.format("%8.2f  deg/s", rotX));
             rotYVal.setText(String.format("%8.2f  deg/s", rotY));
             rotZVal.setText(String.format("%8.2f  deg/s", rotZ));
