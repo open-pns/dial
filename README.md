@@ -4,6 +4,11 @@ Wrist-worn gestural volume controller. Surface EMG on the forearm acts as a clut
 
 ---
 
+## [Demo video:](https://youtu.be/9u-hjNNP5dQ)
+
+[![Watch the demo](https://img.youtube.com/vi/9u-hjNNP5dQ/maxresdefault.jpg)](https://youtu.be/9u-hjNNP5dQ)
+
+___
 ## Hardware Setup
 
 1. Attach gel pads to the EMG sensor electrodes. Gel lowers skin-electrode impedance and reduces signal noise.
