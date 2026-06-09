@@ -1,4 +1,4 @@
-# PNS Virtual Dial
+# PNS Dial
 
 Wrist-worn gestural volume controller. Surface EMG on the forearm acts as a clutch, the dial only responds to wrist rotation while the muscle is intentionally contracted. A potentiometer sets the activation threshold.
 
